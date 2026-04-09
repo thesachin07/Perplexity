@@ -19,12 +19,12 @@ const Login = () => {
     const submitForm = async (event) => {
         event.preventDefault()
 
-        const payload = {
-            email,
-            password,
-        }
+        // const payload = {
+        //     email,
+        //     password,
+        // }
 
-        await handleLogin(payload)
+await handleLogin(email, password)
         navigate("/")
 
     }

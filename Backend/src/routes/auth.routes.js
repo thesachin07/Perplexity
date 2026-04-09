@@ -20,7 +20,7 @@ authRouter.post("/register", registerValidator, register);
  * @access Public
  * @body { email, password }
  */
-authRouter.post("/login", loginValidator, login)
+authRouter.post("/login", login)
 
 
 
