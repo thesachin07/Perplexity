@@ -1,12 +1,28 @@
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
+import {ChatMistralAI} from "@langchain/mistralai"
+import { HumanMessage } from "langchain"
 
-const model = new ChatGoogleGenerativeAI({
+
+const geminiModel = new ChatGoogleGenerativeAI({
   model: "gemini-2.5-flash-lite",
   apiKey: process.env.GEMINI_API_KEY
 });
 
-export async function testAi(){
-    model.invoke("capital of india in one word").then((response)=>{
-        console.log(response.text);
-    })
+const mistralModel = new ChatMistralAI({
+    model: "mistral-small-latest",
+   apiKey: process.env.Mistral_API_KEY
+})
+
+export async function generateResponse(message){
+    const response = await geminiModel.invoke([
+        new HumanMessage(message)
+    ])
+
+export async function generateMistralResponse(message){
+    const response = await mistralModel.invoke([
+        new SystemMessage(`You are a helpful assistant that provides concise and accurate answers to user queries. Always provide clear and informative responses, and avoid unnecessary details.`),
+    ])
+}
+
+    return response.text;
 }

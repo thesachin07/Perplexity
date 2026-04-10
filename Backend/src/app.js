@@ -7,20 +7,20 @@ import chatRouter from "./routes/chat.routes.js";
 import morgon from "morgan";
 const app = express();
 
-// ✅ CORS (correct)
+// CORS (correct)
 app.use(cors({
     origin: "http://localhost:5173",
     credentials: true,
     method: ["GET", "POST", "PUT", "DELETE"],
 }));
 
-// ✅ Middlewares
+// Middlewares
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 app.use(morgon("dev"))
 
-// ✅ Routes
+// Routes
 app.get("/", (req, res) => {
     res.json({ message: "Server is running" });
 });
