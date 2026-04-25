@@ -17,7 +17,7 @@ export async function sendMessage(req, res) {
   }
 
   const userMessage = await messageModel.create({
-    chat: chat.id,
+    chat: chatId || chat.id,
     content: message,
     role: "user",
   });
@@ -27,7 +27,7 @@ export async function sendMessage(req, res) {
   const result = await generateResponse(message);
 
   const aiMessage = await messageModel.create({
-    chat: chat._id,
+    chat: chatId ||chat._id,
     content: result,
     role: "ai",
   });

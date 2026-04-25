@@ -13,15 +13,27 @@ const mistralModel = new ChatMistralAI({
    apiKey: process.env.Mistral_API_KEY
 })
 
-export async function generateResponse(message){
-    const response = await geminiModel.invoke(message.map(msg => {
-                if (msg.role == "user") {
-                    return new HumanMessage(msg.content)
-                } else if (msg.role == "ai") {
-                    return new AIMessage(msg.content)
-                }
-            })) 
-        return response.text;
+export async function generateResponse(message) {
+    let formattedMessages;
+
+    if (Array.isArray(message)) {
+        formattedMessages = message.map(msg => {
+            if (msg.role === "user") {
+                return new HumanMessage(msg.content);
+            } else if (msg.role === "ai") {
+                return new AIMessage(msg.content);
+            }
+        });
+    } else {
+        // agar single string aaye
+        formattedMessages = [
+            new HumanMessage(message)
+        ];
+    }
+
+    const response = await geminiModel.invoke(formattedMessages);
+
+    return response.text;
 }
 
 export async function generateChatTitle(message) {
