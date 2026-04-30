@@ -1,43 +1,47 @@
 import { generateResponse, generateChatTitle } from "../services/ai.service.js";
-import chatModel from "../models/chat.model.js";
+import chatModel from "../models/chat.model.js"
 import messageModel from "../models/message.model.js";
 
 export async function sendMessage(req, res) {
-  const { message, chat: chatId } = req.body;
 
-  let chatTitle = null,
-    chat = null;
+    const { message, chat: chatId } = req.body;
 
-  if (!chatId) {
-    chatTitle = await generateChatTitle(message);
-    chat = await chatModel.create({
-      user: req.user.id,
-      title: chatTitle,
-    });
-  }
 
-  const userMessage = await messageModel.create({
-    chat: chatId || chat.id,
-    content: message,
-    role: "user",
-  });
+    let title = null, chat = null;
 
-  const messages = await messageModel.find({ chat: chatId || chat.id });
+    if (!chatId) {
+        title = await generateChatTitle(message);
+        chat = await chatModel.create({
+            user: req.user.id,
+            title
+        })
+    }
 
-  const result = await generateResponse(message);
+    const userMessage = await messageModel.create({
+        chat: chatId || chat._id,
+        content: message,
+        role: "user"
+    })
 
-  const aiMessage = await messageModel.create({
-    chat: chatId ||chat._id,
-    content: result,
-    role: "ai",
-  });
+    const messages = await messageModel.find({ chat: chatId || chat._id })
 
-  res.status(201).json({
-    title: chatTitle,
-    chat,
-    aiMessage,
-  });
+    const result = await generateResponse(messages);
+
+    const aiMessage = await messageModel.create({
+        chat: chatId || chat._id,
+        content: result,
+        role: "ai"
+    })
+
+
+    res.status(201).json({
+        title,
+        chat,
+        aiMessage
+    })
+
 }
+
 export async function getChats(req, res) {
     const user = req.user
 
