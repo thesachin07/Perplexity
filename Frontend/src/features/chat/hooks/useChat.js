@@ -46,7 +46,6 @@ export const useChat = () => {
         }, {})))
         dispatch(setLoading(false))
     }
-
     async function handleOpenChat(chatId, chats) {
 
         console.log(chats[ chatId ]?.messages.length)
