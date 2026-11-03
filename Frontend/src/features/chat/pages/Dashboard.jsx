@@ -1,26 +1,106 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { useSelector } from "react-redux";
+import { useDispatch, useSelector } from "react-redux";
 import { useChat } from "../hooks/useChat";
 import remarkGfm from "remark-gfm";
+import { addAiResponse, addNewMessage, setError, setLoading } from "../chat.slice";
+import { socket } from "../service/chat.socket";
 
 const Dashboard = () => {
   const chat = useChat();
+  const dispatch = useDispatch();
   const [chatInput, setChatInput] = useState("");
+  const [isTyping, setIsTyping] = useState(false);
+  const pendingRequests = useRef(new Map());
+  const chatRef = useRef(chat);
+  const handleSocketResponse = useRef(() => {});
+  const handleSocketError = useRef(() => {});
   const chats = useSelector((state) => state.chat.chats);
   const currentChatId = useSelector((state) => state.chat.currentChatId);
 
   useEffect(() => {
-    chat.initializeSocketConnection();
-    chat.handleGetChats();
-  }, []);
+    const completeRequest = (payload) => {
+      const requestId = payload.requestId || pendingRequests.current.keys().next().value;
+      const pendingRequest = pendingRequests.current.get(requestId);
+
+      if (!pendingRequest) return;
+
+      pendingRequests.current.delete(requestId);
+      dispatch(addAiResponse({
+        pendingChatId: pendingRequest.optimisticChatId,
+        chatId: payload.chatId,
+        reply: payload.reply,
+        title: payload.title,
+      }));
+      dispatch(setLoading(false));
+      setIsTyping(false);
+    };
+
+    const failRequest = (payload) => {
+      const requestId = payload.requestId || pendingRequests.current.keys().next().value;
+      const pendingRequest = pendingRequests.current.get(requestId);
+
+      if (!pendingRequest) return;
+
+      pendingRequests.current.delete(requestId);
+      dispatch(addNewMessage({
+        chatId: pendingRequest.optimisticChatId,
+        content: "I couldn't complete that request. Please try again.",
+        role: "ai",
+        id: `error-${requestId}`,
+      }));
+      dispatch(setError(payload.error));
+      dispatch(setLoading(false));
+      setIsTyping(false);
+    };
+
+    handleSocketResponse.current = completeRequest;
+    handleSocketError.current = failRequest;
+    socket.on("ai-response", completeRequest);
+    socket.on("ai-error", failRequest);
+    chatRef.current.initializeSocketConnection();
+    chatRef.current.handleGetChats();
+
+    return () => {
+      socket.off("ai-response", completeRequest);
+      socket.off("ai-error", failRequest);
+      handleSocketResponse.current = () => {};
+      handleSocketError.current = () => {};
+    };
+  }, [dispatch]);
 
   const handleSubmitMessage = (event) => {
     event.preventDefault();
     const trimmedMessage = chatInput.trim();
-    if (!trimmedMessage) return;
-    chat.handleSendMessage({ message: trimmedMessage, chatId: currentChatId });
+    if (!trimmedMessage || isTyping) return;
+
+    const requestId = crypto.randomUUID();
+    const optimisticChatId = currentChatId || `pending-${requestId}`;
+    pendingRequests.current.set(requestId, { optimisticChatId });
+    setIsTyping(true);
     setChatInput("");
+
+    chat.handleSendMessage({
+      message: trimmedMessage,
+      chatId: currentChatId,
+      optimisticChatId,
+      requestId,
+      socketId: socket.id,
+    }).then((data) => {
+      if (!pendingRequests.current.has(requestId)) return;
+
+      const fallbackReply = data.aiMessage?.content || data.reply;
+      if (fallbackReply && data.chatId) {
+        handleSocketResponse.current({
+          requestId,
+          chatId: data.chatId,
+          reply: fallbackReply,
+          title: data.chat?.title,
+        });
+      }
+    }).catch((error) => {
+      handleSocketError.current({ requestId, error: error.message });
+    });
   };
 
   const openChat = (chatId) => {
@@ -234,6 +314,21 @@ transition-all duration-200 ease-out hover:bg-red-500/10 hover:border-red-400/40
               </div>
             </div>
           ))}
+
+          {isTyping && (
+            <div className="flex items-center gap-3" aria-live="polite">
+              <div className="w-6 h-6 rounded-full bg-gradient-to-br from-[#6366f1] to-[#8b5cf6] flex items-center justify-center shrink-0">
+                <svg width="10" height="10" viewBox="0 0 14 14" fill="none">
+                  <path d="M7 1L12.5 4.5V9.5L7 13L1.5 9.5V4.5L7 1Z" fill="white" fillOpacity="0.85" />
+                </svg>
+              </div>
+              <div className="typing-dots text-white/50" aria-label="AI is thinking">
+                <span className="typing-dot" />
+                <span className="typing-dot" />
+                <span className="typing-dot" />
+              </div>
+            </div>
+          )}
         </div>
 
         {/* ── Input Footer ── */}
@@ -255,10 +350,10 @@ transition-all duration-200 ease-out hover:bg-red-500/10 hover:border-red-400/40
 
             <button
               type="submit"
-              disabled={!chatInput.trim()}
+              disabled={!chatInput.trim() || isTyping}
               className={`shrink-0 w-8 h-8 rounded-xl flex items-center justify-center transition-all duration-150
                 ${
-                  chatInput.trim()
+                  chatInput.trim() && !isTyping
                     ? "bg-gradient-to-br from-[#8e91df] to-[#1c1c1c] text-white hover:opacity-90 active:scale-95"
                     : "bg-white/[0.05] text-white/20 cursor-not-allowed"
                 }`}

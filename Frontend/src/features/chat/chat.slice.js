@@ -20,8 +20,20 @@ const chatSlice = createSlice({
             }
         },
         addNewMessage: (state, action) => {
-            const { chatId, content, role } = action.payload
-            state.chats[ chatId ].messages.push({ content, role })
+            const { chatId, content, role, id } = action.payload
+            if (!state.chats[ chatId ]) {
+                state.chats[ chatId ] = {
+                    id: chatId,
+                    title: "New Chat",
+                    messages: [],
+                    lastUpdated: new Date().toISOString(),
+                }
+            }
+            state.chats[ chatId ].messages.push({
+                id: id || `${role}-${Date.now()}`,
+                content,
+                role,
+            })
         },
         addMessages: (state, action) => {
             const { chatId, messages } = action.payload
@@ -39,10 +51,46 @@ const chatSlice = createSlice({
         setError: (state, action) => {
             state.error = action.payload
         },
+        addAiResponse: (state, action) => {
+            const { pendingChatId, chatId, reply, title } = action.payload
+            const pendingChat = state.chats[ pendingChatId ]
+
+            if (pendingChatId !== chatId && pendingChat) {
+                state.chats[ chatId ] = {
+                    ...pendingChat,
+                    id: chatId,
+                    title: title || pendingChat.title,
+                }
+                delete state.chats[ pendingChatId ]
+            } else if (!state.chats[ chatId ]) {
+                state.chats[ chatId ] = {
+                    id: chatId,
+                    title: title || "New Chat",
+                    messages: [],
+                    lastUpdated: new Date().toISOString(),
+                }
+            }
+
+            state.chats[ chatId ].messages.push({
+                id: `ai-${Date.now()}`,
+                content: reply,
+                role: "ai",
+            })
+            state.currentChatId = chatId
+        },
     }
 })
 
-export const { setChats, setCurrentChatId, setLoading, setError, createNewChat, addNewMessage, addMessages } = chatSlice.actions
+export const {
+    setChats,
+    setCurrentChatId,
+    setLoading,
+    setError,
+    createNewChat,
+    addNewMessage,
+    addMessages,
+    addAiResponse,
+} = chatSlice.actions
 export default chatSlice.reducer
 
 

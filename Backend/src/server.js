@@ -12,7 +12,9 @@ const PORT = process.env.PORT || 3001;
 
 const httpServer = http.createServer(app)
 
-initSocket(httpServer)
+const io = initSocket(httpServer)
+
+export { io };
 
 connectDB()
 .catch((err) =>{

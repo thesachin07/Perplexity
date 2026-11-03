@@ -1,44 +1,77 @@
 import { generateResponse, generateChatTitle } from "../services/ai.service.js";
 import chatModel from "../models/chat.model.js"
 import messageModel from "../models/message.model.js";
+import { getIO } from "../sockets/server.socket.js";
 
 export async function sendMessage(req, res) {
-
     const { message, chat: chatId } = req.body;
+    const socketId = req.get("x-socket-id");
+    const requestId = req.get("x-request-id");
 
+    try {
+        let title = null;
+        let chat = null;
+        const activeChatId = chatId;
 
-    let title = null, chat = null;
+        if (!activeChatId) {
+            title = await generateChatTitle(message);
+            chat = await chatModel.create({
+                user: req.user.id,
+                title
+            });
+        }
 
-    if (!chatId) {
-        title = await generateChatTitle(message);
-        chat = await chatModel.create({
-            user: req.user.id,
-            title
-        })
+        const resolvedChatId = activeChatId || chat._id;
+
+        await messageModel.create({
+            chat: resolvedChatId,
+            content: message,
+            role: "user"
+        });
+
+        const messages = await messageModel.find({ chat: resolvedChatId });
+        const result = await generateResponse(messages);
+
+        const aiMessage = await messageModel.create({
+            chat: resolvedChatId,
+            content: result,
+            role: "ai"
+        });
+
+        const payload = {
+            reply: result,
+            chatId: resolvedChatId.toString(),
+            title: chat?.title || null,
+            requestId
+        };
+
+        if (socketId) {
+            getIO().to(socketId).emit("ai-response", payload);
+        }
+
+        return res.status(201).json({
+            title,
+            chat,
+            chatId: resolvedChatId.toString(),
+            aiMessage,
+            requestId
+        });
+    } catch (error) {
+        console.error("Error processing chat message:", error);
+
+        if (socketId) {
+            getIO().to(socketId).emit("ai-error", {
+                error: error.message,
+                requestId
+            });
+        }
+
+        return res.status(500).json({
+            message: "Unable to process chat message",
+            error: error.message,
+            requestId
+        });
     }
-
-    const userMessage = await messageModel.create({
-        chat: chatId || chat._id,
-        content: message,
-        role: "user"
-    })
-
-    const messages = await messageModel.find({ chat: chatId || chat._id })
-
-    const result = await generateResponse(messages);
-
-    const aiMessage = await messageModel.create({
-        chat: chatId || chat._id,
-        content: result,
-        role: "ai"
-    })
-
-
-    res.status(201).json({
-        title,
-        chat,
-        aiMessage
-    })
 
 }
 

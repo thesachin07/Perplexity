@@ -11,16 +11,22 @@ let geminiModel = null;
 let mistralModel = null;
 let activeModel = null;
 let modelQuotaExhausted = false;
+const geminiModelName = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
+const mistralMaxRetries = Number(process.env.MISTRAL_MAX_RETRIES || 3);
+const mistralBaseDelayMs = Number(process.env.MISTRAL_RETRY_BASE_DELAY_MS || 500);
+const mistralMinIntervalMs = Number(process.env.MISTRAL_MIN_INTERVAL_MS || 250);
+let mistralRequestQueue = Promise.resolve();
+let lastMistralRequestAt = 0;
 
 try {
     geminiModel = new ChatGoogleGenerativeAI({
-        model: "gemini-2.0-flash",
+        model: 'gemini-3.5-flash-lite',
         apiKey: process.env.GEMINI_API_KEY,
         temperature: 0
     });
-    console.log("✅ Gemini model initialized");
+    console.log(`✅ Gemini model initialized: ${geminiModelName}`);
 } catch (error) {
-    console.warn("⚠️  Failed to initialize Gemini:", error.message);
+    console.warn("  Failed to initialize Gemini:", error.message);
 }
 
 try {
@@ -28,21 +34,21 @@ try {
         model: "mistral-medium-latest",
         apiKey: process.env.MISTRAL_API_KEY
     });
-    console.log("✅ Mistral model initialized");
+    console.log(" Mistral model initialized");
 } catch (error) {
-    console.warn("⚠️  Failed to initialize Mistral:", error.message);
+    console.warn("  Failed to initialize Mistral:", error.message);
 }
 
-// Define the search internet tool
+
 const searchInternetTool = tool(
     async (input) => {
         console.log("🔍 searchInternet tool called with:", input);
         try {
             const result = await searchInternet(input);
-            console.log("✅ Search result received:", result.substring(0, 200));
+            console.log(" Search result received:", result.substring(0, 200));
             return result;
         } catch (error) {
-            console.error("❌ Error in searchInternet tool:", error);
+            console.error("Error in searchInternet tool:", error);
             return `Error searching internet: ${error.message}`;
         }
     },
@@ -95,6 +101,135 @@ function isQuotaError(error) {
            errorMsg.includes('Too Many Requests');
 }
 
+function getErrorStatus(error) {
+    return error?.status || error?.statusCode || error?.response?.status ||
+        error?.cause?.status || error?.cause?.response?.status;
+}
+
+function isMistralRateLimitError(error) {
+    return getErrorStatus(error) === 429 || isQuotaError(error);
+}
+
+function getHeaders(value) {
+    if (!value) {
+        return null;
+    }
+
+    if (typeof value.entries === "function") {
+        return Object.fromEntries(value.entries());
+    }
+
+    if (typeof value === "object") {
+        return value;
+    }
+
+    return null;
+}
+
+function getResponseHeaders(error) {
+    const candidates = [
+        error?.headers,
+        error?.response?.headers,
+        error?.cause?.headers,
+        error?.cause?.response?.headers
+    ];
+
+    for (const candidate of candidates) {
+        const headers = getHeaders(candidate);
+        if (headers) {
+            return headers;
+        }
+    }
+
+    return null;
+}
+
+function logRateLimitHeaders(error, operationName) {
+    const headers = getResponseHeaders(error);
+    if (!headers) {
+        return;
+    }
+
+    const rateLimitHeaders = Object.fromEntries(
+        Object.entries(headers).filter(([name]) =>
+            /^(retry-after|x-ratelimit-|ratelimit-)/i.test(name)
+        )
+    );
+
+    if (Object.keys(rateLimitHeaders).length > 0) {
+        console.info(`ℹ️  Mistral rate-limit headers for ${operationName}:`, rateLimitHeaders);
+    }
+}
+
+function getRetryAfterMs(error) {
+    const headers = getResponseHeaders(error);
+    const retryAfter = headers && Object.entries(headers)
+        .find(([name]) => name.toLowerCase() === "retry-after")?.[1];
+
+    if (!retryAfter) {
+        return null;
+    }
+
+    const seconds = Number(retryAfter);
+    if (Number.isFinite(seconds)) {
+        return Math.max(0, seconds * 1000);
+    }
+
+    const retryAt = Date.parse(retryAfter);
+    return Number.isNaN(retryAt) ? null : Math.max(0, retryAt - Date.now());
+}
+
+function wait(milliseconds) {
+    return new Promise(resolve => setTimeout(resolve, milliseconds));
+}
+
+async function invokeMistralWithRetry(operation, operationName) {
+    const queuedRequest = mistralRequestQueue.then(async () => {
+        for (let attempt = 0; ; attempt += 1) {
+            const intervalRemaining = mistralMinIntervalMs - (Date.now() - lastMistralRequestAt);
+            if (intervalRemaining > 0) {
+                await wait(intervalRemaining);
+            }
+
+            lastMistralRequestAt = Date.now();
+
+            try {
+                const result = await operation();
+                logRateLimitHeaders(result, operationName);
+                return result;
+            } catch (error) {
+                if (!isMistralRateLimitError(error) || attempt >= mistralMaxRetries) {
+                    logRateLimitHeaders(error, operationName);
+                    throw error;
+                }
+
+                logRateLimitHeaders(error, operationName);
+                const exponentialDelay = mistralBaseDelayMs * (2 ** attempt);
+                const jitter = Math.floor(Math.random() * mistralBaseDelayMs);
+                const retryAfterDelay = getRetryAfterMs(error) || 0;
+                const delay = Math.max(retryAfterDelay, exponentialDelay + jitter);
+
+                console.warn(
+                    `⚠️  Mistral rate limit for ${operationName}; retrying in ${delay}ms ` +
+                    `(attempt ${attempt + 1}/${mistralMaxRetries})`
+                );
+                await wait(delay);
+            }
+        }
+    });
+
+    mistralRequestQueue = queuedRequest.catch(() => undefined);
+    return queuedRequest;
+}
+
+async function invokeModel(model, operation, operationName) {
+    if (model === mistralModel) {
+        return invokeMistralWithRetry(operation, operationName);
+    }
+
+    return operation();
+}
+
 export async function generateResponse(messages) {
     try {
         console.log("\n" + "=".repeat(60));
@@ -119,10 +254,10 @@ export async function generateResponse(messages) {
         // Determine which model to use
         let modelToUse = geminiModel;
         if (modelQuotaExhausted && mistralModel) {
-            console.log("⚠️  Using Mistral (Gemini quota exhausted)");
+            console.log(" Using Mistral (Gemini quota exhausted)");
             modelToUse = mistralModel;
         } else if (!geminiModel && mistralModel) {
-            console.log("⚠️  Gemini unavailable, using Mistral");
+            console.log(" Gemini unavailable, using Mistral");
             modelToUse = mistralModel;
         }
 
@@ -136,9 +271,11 @@ export async function generateResponse(messages) {
         console.log(`📤 Invoking agent with ${formattedMessages.length} message(s)...\n`);
 
         try {
-            const response = await agent.invoke({
-                messages: formattedMessages
-            });
+            const response = await invokeModel(
+                modelToUse,
+                () => agent.invoke({ messages: formattedMessages }),
+                "chat response"
+            );
 
             console.log("\n" + "=".repeat(60));
             console.log("✅ Agent invocation completed successfully");
@@ -176,13 +313,14 @@ export async function generateResponse(messages) {
                 modelQuotaExhausted = true;
 
                 // Try with Mistral if available
-                if (mistralModel && modelToUse === geminiModel) {
-                    console.log("🔄 Retrying with Mistral model...\n");
+                if (false && mistralModel && modelToUse === geminiModel) {
+                    // console.log("🔄 Retrying with Mistral model...\n");
                     const mistralAgent = createAgent(mistralModel);
                     
-                    const response = await mistralAgent.invoke({
-                        messages: formattedMessages
-                    });
+                    const response = await invokeMistralWithRetry(
+                        () => mistralAgent.invoke({ messages: formattedMessages }),
+                        "fallback chat response"
+                    );
 
                     if (!response.messages || response.messages.length === 0) {
                         throw new Error("Fallback agent returned no messages");
@@ -231,17 +369,21 @@ export async function generateChatTitle(message) {
     try {
         console.log("🏷️  Generating chat title for:", message.substring(0, 50));
 
-        // Try Mistral for titles (lighter task, less quota usage)
-        const model = mistralModel || geminiModel;
+       
+        const model = geminiModel || mistralModel;
         
         if (!model) {
             return "Chat";
         }
 
-        const response = await model.invoke([
-            new SystemMessage(`Generate a concise 2-4 word title for a chat conversation.`),
-            new HumanMessage(`Generate a title for: "${message}"`)
-        ]);
+        const response = await invokeModel(
+            model,
+            () => model.invoke([
+                new SystemMessage(`Generate a concise 2-4 word title for a chat conversation.`),
+                new HumanMessage(`Generate a title for: "${message}"`)
+            ]),
+            "chat title"
+        );
 
         const title = response.text || "Chat";
         console.log("✅ Chat title generated:", title);
